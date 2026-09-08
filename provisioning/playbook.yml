@@ -1,0 +1,98 @@
+- hosts: all
+  gather_facts: no
+
+- name: Prepare attacker toolkit
+  hosts: attacker
+  become: yes
+  tasks:
+    - name: Install nmap and hydra
+      apt:
+        name:
+          - nmap
+          - hydra
+        update_cache: yes
+
+    - name: Place a common-password wordlist in user's home directory
+      copy:
+        dest: /home/user/common_passwords.txt
+        owner: user
+        group: user
+        mode: '0644'
+        content: |
+          123456
+          password
+          admin
+          letmein
+          qwerty
+          admin123
+          12345678
+          welcome
+          password123
+          changeme
+
+- name: Deploy vulnerable internal web admin panel on victim
+  hosts: victim
+  become: yes
+  tasks:
+    - name: Deploy web admin panel script (stdlib only, no pip/internet needed)
+      copy:
+        dest: /opt/web-admin-panel.py
+        mode: '0755'
+        content: |
+          #!/usr/bin/env python3
+          import http.server
+          import base64
+
+          FLAG = "CRCZP{d3f4ult_4dm1n_p4nel_cred5}"
+          VALID = base64.b64encode(b"admin:admin").decode()
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == "/admin":
+                      auth = self.headers.get("Authorization", "")
+                      if auth == "Basic " + VALID:
+                          self.send_response(200)
+                          self.send_header("Content-Type", "text/plain")
+                          self.end_headers()
+                          self.wfile.write(f"Welcome admin!\nFlag: {FLAG}\n".encode())
+                      else:
+                          self.send_response(401)
+                          self.send_header("WWW-Authenticate", 'Basic realm="Router Admin"')
+                          self.send_header("Content-Type", "text/plain")
+                          self.end_headers()
+                          self.wfile.write(b"Authentication required.\n")
+                  else:
+                      self.send_response(200)
+                      self.send_header("Content-Type", "text/plain")
+                      self.end_headers()
+                      self.wfile.write(b"Internal Router Management Interface\nGo to /admin to manage settings.\n")
+
+              def log_message(self, format, *args):
+                  pass
+
+          if __name__ == "__main__":
+              server = http.server.HTTPServer(("0.0.0.0", 8080), Handler)
+              server.serve_forever()
+
+    - name: Create systemd service for web admin panel
+      copy:
+        dest: /etc/systemd/system/web-admin-panel.service
+        content: |
+          [Unit]
+          Description=Internal Router Web Admin Panel
+          After=network.target
+
+          [Service]
+          ExecStart=/usr/bin/python3 /opt/web-admin-panel.py
+          Restart=always
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start web admin panel service
+      systemd:
+        name: web-admin-panel
+        enabled: yes
+        state: started
+        daemon_reload: yes
